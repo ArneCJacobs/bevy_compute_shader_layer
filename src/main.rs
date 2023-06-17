@@ -266,7 +266,7 @@ impl render_graph::Node for GameOfLifeNode {
             .begin_compute_pass(&ComputePassDescriptor::default());
 
         pass.set_bind_group(0, texture_bind_group, &[]);
-        pass.set_bind_group(1, view_bind_group, &[0]);
+        pass.set_bind_group(1, view_bind_group, &[0]); // TODO: get proper offset from ViewUniformOffset (just ask)
 
         // select the pipeline based on the current state
         match self.state {
