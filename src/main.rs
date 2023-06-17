@@ -10,10 +10,10 @@ use bevy::{
         render_asset::RenderAssets,
         render_graph::{self, RenderGraph},
         render_resource::*,
-        renderer::{RenderContext, RenderDevice},
-        RenderApp, RenderSet,
+        renderer::{RenderContext, RenderDevice, RenderQueue},
+        RenderApp, RenderSet, view::{ViewUniforms, ViewUniform, ViewUniformOffset}, texture::DefaultImageSampler,
     },
-    window::WindowPlugin,
+    window::WindowPlugin, ecs::system::SystemState,
 };
 use std::borrow::Cow;
 
@@ -62,6 +62,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     commands.spawn(Camera2dBundle::default());
 
     commands.insert_resource(GameOfLifeImage(image));
+    // commands.insert_resource(CommonUniform::default());
 }
 
 pub struct GameOfLifeComputePlugin;
@@ -89,7 +90,10 @@ impl Plugin for GameOfLifeComputePlugin {
 struct GameOfLifeImage(Handle<Image>);
 
 #[derive(Resource)]
-struct GameOfLifeImageBindGroup(BindGroup);
+struct GameOfLifeImageBindGroup { 
+    image_bind_group: BindGroup,
+    view_bind_group: BindGroup,
+}
 
 fn queue_bind_group(
     mut commands: Commands,
@@ -97,9 +101,11 @@ fn queue_bind_group(
     gpu_images: Res<RenderAssets<Image>>,
     game_of_life_image: Res<GameOfLifeImage>,
     render_device: Res<RenderDevice>,
+    view_uniforms: Res<ViewUniforms>,
 ) {
     let view = &gpu_images[&game_of_life_image.0];
-    let bind_group = render_device.create_bind_group(&BindGroupDescriptor {
+    let view_binding = view_uniforms.uniforms.binding().unwrap();
+    let image_bind_group = render_device.create_bind_group(&BindGroupDescriptor {
         label: None,
         layout: &pipeline.texture_bind_group_layout,
         entries: &[BindGroupEntry {
@@ -107,12 +113,25 @@ fn queue_bind_group(
             resource: BindingResource::TextureView(&view.texture_view),
         }],
     });
-    commands.insert_resource(GameOfLifeImageBindGroup(bind_group));
+
+    let view_bind_group = render_device.create_bind_group(&BindGroupDescriptor {
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: view_binding,
+            }],
+            label: Some("sprite_view_bind_group"),
+            layout: &pipeline.view_layout,
+        });
+    commands.insert_resource(GameOfLifeImageBindGroup{
+        image_bind_group,
+        view_bind_group
+    });
 }
 
 #[derive(Resource)]
 pub struct GameOfLifePipeline {
     texture_bind_group_layout: BindGroupLayout,
+    view_layout: BindGroupLayout,
     init_pipeline: CachedComputePipelineId,
     update_pipeline: CachedComputePipelineId,
 }
@@ -135,13 +154,34 @@ impl FromWorld for GameOfLifePipeline {
                         count: None,
                     }],
                 });
+
+        let mut system_state: SystemState<(
+            Res<RenderDevice>,
+            Res<DefaultImageSampler>,
+            Res<RenderQueue>,
+        )> = SystemState::new(world);
+        let (render_device, _, _) = system_state.get_mut(world);
+
+        let view_layout = render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: Some(ViewUniform::min_size()),
+                },
+                count: None,
+            }],
+            label: Some("sprite_view_layout"),
+        });
         let shader = world
             .resource::<AssetServer>()
             .load("shaders/game_of_life.wgsl");
         let pipeline_cache = world.resource::<PipelineCache>();
         let init_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: None,
-            layout: vec![texture_bind_group_layout.clone()],
+            layout: vec![texture_bind_group_layout.clone(), view_layout.clone()],
             push_constant_ranges: Vec::new(),
             shader: shader.clone(),
             shader_defs: vec![],
@@ -149,7 +189,7 @@ impl FromWorld for GameOfLifePipeline {
         });
         let update_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: None,
-            layout: vec![texture_bind_group_layout.clone()],
+            layout: vec![texture_bind_group_layout.clone(), view_layout.clone()],
             push_constant_ranges: Vec::new(),
             shader,
             shader_defs: vec![],
@@ -157,6 +197,7 @@ impl FromWorld for GameOfLifePipeline {
         });
 
         GameOfLifePipeline {
+            view_layout,
             texture_bind_group_layout,
             init_pipeline,
             update_pipeline,
@@ -213,15 +254,19 @@ impl render_graph::Node for GameOfLifeNode {
         render_context: &mut RenderContext,
         world: &World,
     ) -> Result<(), render_graph::NodeRunError> {
-        let texture_bind_group = &world.resource::<GameOfLifeImageBindGroup>().0;
+        let bind_groups = &world.resource::<GameOfLifeImageBindGroup>(); 
+        let texture_bind_group = &bind_groups.image_bind_group;
+        let view_bind_group = &bind_groups.view_bind_group;
         let pipeline_cache = world.resource::<PipelineCache>();
         let pipeline = world.resource::<GameOfLifePipeline>();
+        // let view_uniform_offset = world.resource::<ViewUniformOffset>();
 
         let mut pass = render_context
             .command_encoder()
             .begin_compute_pass(&ComputePassDescriptor::default());
 
         pass.set_bind_group(0, texture_bind_group, &[]);
+        pass.set_bind_group(1, view_bind_group, &[0]);
 
         // select the pipeline based on the current state
         match self.state {
