@@ -266,7 +266,10 @@ impl render_graph::Node for GameOfLifeNode {
             .begin_compute_pass(&ComputePassDescriptor::default());
 
         pass.set_bind_group(0, texture_bind_group, &[]);
+        // current theory, 0 is fine as long as there is
+        // only one camera and if there are multiple cameras, it will only pick the first one?
         pass.set_bind_group(1, view_bind_group, &[0]); // TODO: get proper offset from ViewUniformOffset (just ask)
+
 
         // select the pipeline based on the current state
         match self.state {
